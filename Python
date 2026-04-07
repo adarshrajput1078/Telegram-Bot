@@ -1,0 +1,148 @@
+import random
+import asyncio
+import dns.resolver
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from pymongo import MongoClient
+
+# -------- 🛠️ CRITICAL CONFIG & DNS FIX -------- #
+BOT_TOKEN = "8727419436:AAENyQsjl3l773rGCgrZUCsTTv2BhRDPZfs"
+MONGO_URI = "mongodb+srv://adarshrajput1078_db_user:Odr0AFx6dYmIDL9K@cluster0.1zyjky4.mongodb.net/gameBotDB?retryWrites=true&w=majority"
+ADMIN_ID = 8663479853
+
+# Fix for Termux DNS Error
+dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
+dns.resolver.default_resolver.nameservers = ['8.8.8.8', '1.1.1.1']
+
+client = MongoClient(MONGO_URI, maxPoolSize=50, connectTimeoutMS=30000)
+db = client["gameBotDB"]
+users = db["users"]
+bets = db["bets"]
+settings = db["settings"]
+
+# -------- 🎨 UI KEYBOARDS -------- #
+
+def main_menu_kb(uid):
+    kb = [
+        [InlineKeyboardButton("🎮 PLAY NOW (20X) 🎮", callback_data="play_grid")],
+        [InlineKeyboardButton("👤 PROFILE", callback_data="prof"), InlineKeyboardButton("📜 HISTORY", callback_data="hist")],
+        [InlineKeyboardButton("💰 WALLET", callback_data="wall"), InlineKeyboardButton("🎁 GIFT CODE", callback_data="gift")],
+        [InlineKeyboardButton("🤝 INVITE", callback_data="inv"), InlineKeyboardButton("💼 APPLY AGENT", callback_data="agent")]
+    ]
+    if uid == ADMIN_ID:
+        kb.append([InlineKeyboardButton("👑 ADMIN GOD-MODE", callback_data="admin_dash")])
+    return InlineKeyboardMarkup(kb)
+
+def number_grid():
+    # 0-9 Numbers in clean grid
+    buttons = [InlineKeyboardButton(str(i), callback_data=f"bet_num_{i}") for i in range(10)]
+    return InlineKeyboardMarkup([buttons[0:5], buttons[5:10], [InlineKeyboardButton("🔙 BACK", callback_data="home")]])
+
+def admin_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🕵️ SPY LIVE BETS", callback_data="spy")],
+        [InlineKeyboardButton("🏁 DECLARE RESULT", callback_data="res_menu")],
+        [InlineKeyboardButton("💸 PENDING PAYMENTS", callback_data="pending_pay")],
+        [InlineKeyboardButton("📢 BROADCAST", callback_data="bc")],
+        [InlineKeyboardButton("🔙 USER MODE", callback_data="home")]
+    ])
+
+# -------- 🚀 USER LOGIC -------- #
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    name = update.effective_user.first_name
+    
+    # Register User
+    if not users.find_one({"user_id": uid}):
+        users.insert_one({"user_id": uid, "name": name, "balance": 0, "upi": "", "role": "USER"})
+
+    # Check for Maintenance/Coming Soon
+    if uid != ADMIN_ID:
+        coming_soon = (
+            f"🚀 **KILLER10X: THE 20X REVOLUTION**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Hello *{name}*, India's most powerful prediction bot is arriving! 🎰\n\n"
+            f"🔥 **OFFER:** ₹1 to ₹20 in just 60 Seconds!\n"
+            f"📅 **LAUNCH:** 10th April | 10:00 AM\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📢 *Join Channel for Launch Bonus:* @YourChannel"
+        )
+        return await update.message.reply_text(coming_soon, parse_mode="Markdown")
+
+    await update.message.reply_text(f"👋 Welcome Boss! System is 1000X Optimized.", reply_markup=main_menu_kb(uid))
+
+# -------- 👑 ADMIN GOD-MODE FUNCTIONS -------- #
+
+async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    
+    if data == "admin_dash":
+        await query.message.edit_text("👑 **ADMIN CONTROL PANEL**\nManage games and profit here.", reply_markup=admin_kb())
+
+    elif data == "spy":
+        # Check money on each number 0-9
+        summary = {i: 0 for i in range(10)}
+        active_bets = bets.find({"status": "PENDING"})
+        for b in active_bets:
+            summary[b['num']] += b['amt']
+        
+        text = "🕵️ **LIVE BET MONITOR (0-9)**\n━━━━━━━━━━━━━\n"
+        for n, amt in summary.items():
+            text += f"Number {n}: ₹{amt}\n"
+        
+        text += "\n💡 *Profit Tip:* Select the number with the lowest ₹ amount as winner!"
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=admin_kb())
+
+# -------- 💸 WALLET & WITHDRAWAL -------- #
+
+async def wallet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    uid = query.from_user.id
+    u = users.find_one({"user_id": uid})
+    
+    text = (
+        f"💰 **MY WALLET**\n━━━━━━━━━━━━━\n"
+        f"💵 Balance: ₹{u['balance']}\n"
+        f"💳 UPI: `{u.get('upi', 'Not Set')}`\n\n"
+        f"Min Withdrawal: ₹100"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ DEPOSIT", callback_data="dep"), InlineKeyboardButton("➖ WITHDRAW", callback_data="wd")],
+        [InlineKeyboardButton("🔙 BACK", callback_data="home")]
+    ])
+    await query.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+
+# -------- 🛠️ SYSTEM RULES -------- #
+
+async def send_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rules = (
+        "📜 **OFFICIAL GAME RULES**\n━━━━━━━━━━━━━\n"
+        "1. One account per user/device. 🚫\n"
+        "2. Min Bet: ₹10 | Min Withdraw: ₹100. 💰\n"
+        "3. Correct Number (0-9) pays **20X**. 🎰\n"
+        "4. Fake UTR = Permanent Ban. ❌\n"
+        "5. Withdrawals take 2-4 hours. ⏳"
+    )
+    await update.message.reply_text(rules, parse_mode="Markdown")
+
+# -------- 🎮 MAIN RUNNER -------- #
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
+    
+    # Basic Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("rules", send_rules))
+    
+    # Callback Handlers
+    app.add_handler(CallbackQueryHandler(handle_admin, pattern="^(admin_dash|spy|res_menu)"))
+    app.add_handler(CallbackQueryHandler(wallet_handler, pattern="wall"))
+    
+    print("🚀 KILLER10X MASTER BOT IS LIVE!")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
